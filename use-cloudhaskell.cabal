@@ -19,10 +19,34 @@ library
                      , PrimeFactors
   build-depends:       base >= 4.7 && < 5
                      , argon
+                     , docopt
+                     , pipes
+                     , pipes-safe
                      , process
+                     , aeson
+                     , servant
+                     , servant-server
+                     , servant-client
+                     , transformers
+                     , wai
+                     , warp
+                     , wai-logger
+                     , mongoDB
+                     , hslogger
+                     , time
+                     , resourcet
+                     , text
+                     , bytestring
+                     , bson
+                     , mtl
+                     , http-client
+                     , directory
+                     , filepath
+                     , split
                      , network-transport-tcp
                      , distributed-process
                      , distributed-process-simplelocalnet
+                     , HTTP
   default-language:    Haskell2010
 
 executable use-cloudhaskell-exe

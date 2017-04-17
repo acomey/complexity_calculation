@@ -21,27 +21,54 @@ module Lib
 import           Control.Distributed.Process
 import           Control.Distributed.Process.Backend.SimpleLocalnet
 import           Control.Distributed.Process.Closure
-import           Control.Distributed.Process.Node                   (initRemoteTable)
 import           Control.Monad
-import           Network.Transport.TCP                              (createTransport,
-                                                                     defaultTCPParameters)
-import           PrimeFactors
-import           System.Environment                                 (getArgs)
-import           System.Exit
-import           Argon
+import           Control.Monad.IO.Class       (liftIO)
+import           Control.Monad.Trans.Except   (ExceptT)
+import           Control.Monad.Trans.Resource
+import           Data.Aeson
+import           Data.Aeson.TH
+import qualified Data.ByteString.Lazy         as L
+import qualified Data.List                    as DL
+import           Data.Maybe                   (catMaybes)
+import           Data.Text                    (pack, unpack)
+import           Data.Time.Clock              (UTCTime, getCurrentTime)
+import           Data.Time.Format             (defaultTimeLocale, formatTime)
+import           Database.MongoDB
+import           GHC.Generics
+import           Network.HTTP.Client          (defaultManagerSettings,
+                                               newManager)
+import           Network.Wai
+import           Network.Wai.Handler.Warp
+import           Network.Wai.Logger
+import           Servant
+import qualified Servant.API                  as SC
+import qualified Servant.Client               as SC
+import           System.Environment           (getArgs, getProgName, lookupEnv)
+import           System.Log.Formatter
+import           System.Log.Handler           (setFormatter)
+import           System.Log.Handler.Simple
+import           System.Log.Handler.Syslog
+import           System.Log.Logger
 import           System.Process
 
+import           Argon
+import           System.Console.Docopt
+import           Pipes
+import           Pipes.Safe (runSafeT)
+import qualified Pipes.Prelude as P
+import           Control.Monad (forM_,forM)
+import           System.Directory (getDirectoryContents)
+import           System.Directory (doesFileExist)
+import           System.Directory (listDirectory)
+import           System.FilePath.Posix
+import           Data.List (isSuffixOf)
+import           Data.List.Split
+import           Network.HTTP(simpleHTTP,getRequest,getResponseBody,getResponseCode,ResponseCode)
+import           Control.Distributed.Process.Node                   (initRemoteTable)
 
 
-getComplexity :: ComplexityBlock -> Int
-getComplexity ( CC tuple ) = getComplexity' tuple
 
-getComplexity' :: (Loc, String, Int) -> Int
-getComplexity' ( _,_,complexity ) = complexity
-
-
-
-
+-- returns all the files in a Directory
 traverseDir :: FilePath -> IO [FilePath]
 traverseDir top = do
     ds <- listDirectory top
@@ -53,35 +80,17 @@ traverseDir top = do
         else return [path]
     return (concat paths)
 
+-- returns the third element. Argon analyze outputs three results; the third of which is the complexity result
+getComplexity' :: (Loc, String, Int) -> Int
+getComplexity' ( _,_,complexity ) = complexity
+
+
+-- returns haskell files from a list of files
 filterHaskellFile :: [FilePath] ->[FilePath]
 filterHaskellFile fileList = filter (".hs" `isSuffixOf`) fileList
 
 
-filterFiles :: FilePath ->IO [FilePath]
-filterFiles path = do
-    root <- listDirectory path
-    --putStrLn $ show root
-    --
-    printList path root
-    return root
-
-    where
-
-      printList :: FilePath->[FilePath] -> IO ()
-      printList base root = do
-        forM_ root $ \name -> do
-          let b = (base </> name)
-          isFile<- liftIO $ doesFileExist $ base </> name
-          if not isFile then do
-              result <- listDirectory $ base </> name
-
-              printList (base </> name) result
-              --putStrLn $ show a
-          else do
-              putStrLn $ show "hello"
-              --putStrLn $ base </> name
-
-
+-- Config is one of the paramters of Argon's analyze function
 getConfig ::Config
 getConfig = Config {
     minCC       = read "2"
@@ -113,11 +122,13 @@ worker (manager, workQueue) = do
 
       send workQueue us -- Ask the queue for work. Note that we send out process id so that a message can be sent to us
 
-      -- Wait for work to arrive. We will either be sent a message with an integer value to use as input for processing,
+      -- Wait for work to arrive.
+     --  We will either be sent a string message  as input for processing,
       -- or else we will be sent (). If there is work, do it, otherwise terminate
       receiveWait
         [ match $ \path  -> do
             liftIO $ putStrLn $ "[Node " ++ (show us) ++ "] given work: "
+            -- analyzes the file at that path
             (file,analysis) <- analyze getConfig path
             let result = getComplexity' analysis
             send manager result
@@ -130,7 +141,7 @@ worker (manager, workQueue) = do
 
 remotable ['worker] -- this makes the worker function executable on a remote node
 
-manager :: String    -- The number range we wish to generate work for (there will be n work packages)
+manager :: String    -- The url of the repository we wish to analyze
         -> [NodeId]   -- The set of cloud haskell nodes we will initalise as workers
         -> Process Integer
 
@@ -140,25 +151,22 @@ manager url workers = do
   -- first, we create a thread that generates the work tasks in response to workers
   -- requesting work.
   workQueue <- spawnLocal $ do
-    -- Return the next bit of work to be done
-
+    -- clones the repository
     callCommand $ "git clone " ++ url
+    -- separates the repo name from the url
     let gitName = last $ splitOn "/" url
     let name = head $ splitOn "." gitName
-
     files <-traverseDir ("./" ++ name)
 
-
-
     let numFiles = length (filterHaskellFile files)
+    -- 
     forM_ (filterHaskellFile files) $ \path -> do
       them <- expect   -- await a message from a free worker asking for work
       send them path     -- send them work
 
-    forM_ [1 .. n] $ \m -> do
+    forM_ [1 .. numFiles] $ \m -> do
       pid <- expect   -- await a message from a free worker asking for work
       send pid m     -- send them work
->>>>>>> a9b04c75b92e06638dc71f79a509859b159d2187
 
     -- Once all the work is done tell the workers to terminate. We do this by sending every worker who sends a message
     -- to us a null content: () . We do this only after we have distributed all the work in the forM_ loop above. Note
@@ -173,12 +181,17 @@ manager url workers = do
   liftIO $ putStrLn $ "[Manager] Workers spawned"
   -- wait for all the results from the workers and return the sum total. Look at the implementation, whcih is not simply
   -- summing integer values, but instead is expecting results from workers.
-  complexityResult <- do
-      complexityList <- forM [1..numFiles] $ \m -> do
-          newComplexity <- expect
-          return newComplexity
-      let result = ( sum complexityList )/numFiles
-      return result
+  -- letcomplexityResult = liftIO $ do
+  let gitName = last $ splitOn "/" url
+  let name = head $ splitOn "." gitName
+  files <-traverseDir ("./" ++ name)
+  let numFiles = length (filterHaskellFile files)
+  complexityList <- forM [1..numFiles] $ \m -> do
+     newComplexity <- expect
+     return newComplexity
+
+  let result = ( sum complexityList )/numFiles
+  return result
 -- note how this function works: initialised with n, the number range we started the program with, it calls itself
 -- recursively, decrementing the integer passed until it finally returns the accumulated value in go:acc. Thus, it will
 -- be called n times, consuming n messages from the message queue, corresponding to the n messages sent by workers to
@@ -187,6 +200,10 @@ manager url workers = do
 
 -- | This is the entrypoint for the program. We deal with program arguments and launch up the cloud haskell code from
 -- here.
+
+rtable :: RemoteTable
+rtable = Lib.__remoteTable initRemoteTable
+
 someFunc :: IO ()
 someFunc = do
 

@@ -18,7 +18,6 @@
 
 resolver: lts-6.3
 
-resolver: nightly-2016-12-10
 
 docker:
   enable: false # warning!
@@ -52,7 +51,7 @@ packages:
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
 
-extra-deps: [ distributed-process-0.6.6, distributed-process-simplelocalnet-0.2.3.3, network-multicast-0.1.2,  argon-0.4.1.0,directory-1.2.5.1, pipes-files-0.1.2, hierarchy-0.3.1.2, posix-paths-0.2.1.1]
+extra-deps: [servant-client-0.9.1.1, servant-0.9.1.1, servant-server-0.9.1.1, http-api-data-0.3.2, hierarchy-0.3.1, posix-paths-0.2.1.0, pipes-files-0.1.1, argon-0.4.1.0,directory-1.2.5.1]
 
 # Override default flag values for local packages and extra-deps
 flags: {}
